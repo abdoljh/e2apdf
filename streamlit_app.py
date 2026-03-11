@@ -27,17 +27,17 @@ _AMIRI_URL = (
 )
 
 
-@st.cache_resource(show_spinner=False)
 def _ensure_arabic_font() -> str | None:
     """
     Return a path to an Arabic-capable .ttf file, downloading one if needed.
     Returns None if auto-detection from system paths will suffice.
+    Runs once at module load; result is stored in _ARABIC_FONT_PATH.
     """
     from src.renderer import FontConfig, RenderError
 
     # 1. Try the fonts that ship with the OS (e.g. fonts-freefont-ttf).
     try:
-        fc = FontConfig().auto_detect()
+        FontConfig().auto_detect()
         return None  # auto_detect already works; pipeline will find it too
     except RenderError:
         pass
@@ -49,7 +49,7 @@ def _ensure_arabic_font() -> str | None:
             ["apt-get", "install", "-y", "fonts-freefont-ttf"],
             capture_output=True, timeout=60,
         )
-        fc = FontConfig().auto_detect()
+        FontConfig().auto_detect()
         return None
     except Exception:
         pass
@@ -69,6 +69,10 @@ def _ensure_arabic_font() -> str | None:
             return None  # give up; pipeline will surface the error itself
 
     return str(amiri_path) if amiri_path.exists() else None
+
+
+# Resolve font once at import time — before any Streamlit widgets are created.
+_ARABIC_FONT_PATH: str | None = _ensure_arabic_font()
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +202,6 @@ if uploaded_file is not None:
         root_logger.addHandler(ui_handler)
         root_logger.setLevel(logging.INFO)
 
-        resolved_font = _ensure_arabic_font()
-
         try:
             # Write uploaded PDF to a temp file
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,7 +234,7 @@ if uploaded_file is not None:
                     translation_backend=backend,
                     api_key=api_key.strip() or None,
                     model=model_name.strip() or None,
-                    font_path=resolved_font,
+                    font_path=_ARABIC_FONT_PATH,
                     cache_path=cache_path,
                     mirror_layout=mirror_layout,
                     preserve_positions=preserve_positions,
