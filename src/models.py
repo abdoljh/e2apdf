@@ -88,7 +88,36 @@ class TextBlock:
 
     @property
     def full_text(self) -> str:
-        return " ".join(s.text for s in self.spans if s.text.strip())
+        if not self.spans:
+            return ""
+        # Group spans into lines by similar y1 (top edge), then sort each
+        # line left-to-right and insert spaces where there is a visible gap.
+        # This handles character-level extraction where every glyph is its
+        # own span and uppercase/descender glyphs have slightly different y1.
+        line_height = max(s.font.size for s in self.spans)
+        tolerance = line_height * 0.5
+
+        all_spans = sorted(self.spans, key=lambda s: -s.bbox.y1)
+        lines: list[list[TextSpan]] = [[all_spans[0]]]
+        for span in all_spans[1:]:
+            if abs(span.bbox.y1 - lines[-1][0].bbox.y1) <= tolerance:
+                lines[-1].append(span)
+            else:
+                lines.append([span])
+
+        line_texts: list[str] = []
+        for line in lines:
+            line.sort(key=lambda s: s.bbox.x0)
+            parts: list[str] = []
+            for i, span in enumerate(line):
+                if i > 0:
+                    gap = span.bbox.x0 - line[i - 1].bbox.x1
+                    if gap > span.font.size * 0.4:
+                        parts.append(" ")
+                parts.append(span.text)
+            line_texts.append("".join(parts))
+
+        return " ".join(line_texts)
 
     @property
     def primary_font(self) -> FontInfo:
