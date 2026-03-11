@@ -169,12 +169,17 @@ class PDFExtractor:
 
         # --- Extract text ---
         textpage = page.get_textpage()
-        full_text = textpage.get_text_bounded()
+
+        # pypdfium2 5.x renamed get_text_bounded() (no-args form) to get_text()
+        try:
+            full_text = textpage.get_text_bounded()
+        except TypeError:
+            full_text = textpage.get_text()
 
         # Extract character-level info to build spans
         n_chars = textpage.count_chars()
         if n_chars > 0:
-            spans = self._build_spans_from_textpage(textpage, n_chars, height)
+            spans = self._build_spans_from_textpage(textpage, n_chars, height, full_text)
             blocks = self._spans_to_blocks(spans)
             if self.merge_paragraphs:
                 blocks = self._merge_paragraph_blocks(blocks)
@@ -197,7 +202,7 @@ class PDFExtractor:
         return page_content
 
     def _build_spans_from_textpage(
-        self, textpage, n_chars: int, page_height: float
+        self, textpage, n_chars: int, page_height: float, full_text: str = ""
     ) -> list[TextSpan]:
         """Build text spans from pypdfium2 textpage character data."""
         spans: list[TextSpan] = []
@@ -207,7 +212,12 @@ class PDFExtractor:
 
         for i in range(n_chars):
             try:
-                char = textpage.get_text_range(i, 1)
+                # pypdfium2 5.x removed get_text_range(i, 1) — use the
+                # pre-fetched full-text string instead (same code points).
+                if full_text and i < len(full_text):
+                    char = full_text[i]
+                else:
+                    char = textpage.get_text_range(i, 1)
                 if not char or char == "\x00":
                     continue
 

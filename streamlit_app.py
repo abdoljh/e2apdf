@@ -116,21 +116,29 @@ with st.sidebar:
     api_key = ""
     model_name = ""
 
+    _ENV_VAR_HINTS = {
+        "google": "GOOGLE_TRANSLATE_API_KEY",
+        "deepl": "DEEPL_API_KEY",
+        "llm-openai": "OPENAI_API_KEY",
+        "llm-anthropic": "ANTHROPIC_API_KEY",
+    }
+
     if backend != "mock":
-        env_var_hints = {
-            "google": "GOOGLE_TRANSLATE_API_KEY",
-            "deepl": "DEEPL_API_KEY",
-            "llm-openai": "OPENAI_API_KEY",
-            "llm-anthropic": "ANTHROPIC_API_KEY",
-        }
-        env_hint = env_var_hints.get(backend, "API_KEY")
-        # Pre-fill from environment if available
-        default_key = os.environ.get(env_hint, "")
+        env_hint = _ENV_VAR_HINTS.get(backend, "API_KEY")
+        # Secrets priority: st.secrets → env var → empty (user must type it)
+        default_key = (
+            st.secrets.get(env_hint, None)
+            or st.secrets.get(env_hint.lower(), None)
+            or os.environ.get(env_hint, "")
+        )
         api_key = st.text_input(
             "API Key",
             value=default_key,
             type="password",
-            help=f"Your API key (or set the `{env_hint}` environment variable).",
+            help=(
+                f"Your API key. Set `{env_hint}` in Streamlit secrets "
+                f"or as an environment variable to avoid typing it here."
+            ),
         )
 
     if backend in ("llm-openai", "llm-anthropic"):
@@ -159,6 +167,33 @@ with st.sidebar:
         value=True,
         help="Cache translations to avoid re-calling the API for identical text.",
     )
+
+# ---------------------------------------------------------------------------
+# Active-backend indicator
+# ---------------------------------------------------------------------------
+_BACKEND_LABELS = {
+    "mock": ("Mock (testing — no real translation)", "⚙️"),
+    "google": ("Google Cloud Translation", "🔵"),
+    "deepl": ("DeepL", "🟢"),
+    "llm-openai": ("OpenAI GPT", "🟣"),
+    "llm-anthropic": ("Anthropic Claude", "🟠"),
+}
+_label, _icon = _BACKEND_LABELS.get(backend, (backend, "🔧"))
+
+if backend == "mock":
+    st.info(f"{_icon} **Active backend:** {_label} — output is placeholder text, not real Arabic.", icon="ℹ️")
+else:
+    _key_source = ""
+    _env_hint = _ENV_VAR_HINTS.get(backend, "API_KEY")
+    if st.secrets.get(_env_hint) or st.secrets.get(_env_hint.lower()):
+        _key_source = " · API key loaded from Streamlit secrets"
+    elif os.environ.get(_env_hint):
+        _key_source = " · API key loaded from environment"
+    elif api_key.strip():
+        _key_source = " · API key entered manually"
+    else:
+        _key_source = " · ⚠️ no API key provided"
+    st.info(f"{_icon} **Active backend:** {_label}{_key_source}", icon="ℹ️")
 
 # ---------------------------------------------------------------------------
 # Main area — file upload
@@ -269,6 +304,14 @@ if uploaded_file is not None:
 
                 if report.success:
                     st.success("Translation complete!")
+
+                    if report.translated_blocks == 0 and report.total_blocks == 0:
+                        st.warning(
+                            "No text was extracted from the PDF. "
+                            "The file may be scanned/image-based (OCR not supported), "
+                            "encrypted, or have no selectable text. "
+                            "Check the pipeline log and warnings below for details."
+                        )
 
                     # Stats
                     col1, col2, col3, col4 = st.columns(4)
