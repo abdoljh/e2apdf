@@ -7,12 +7,69 @@ Supports mock (testing), Google Translate, DeepL, OpenAI, and Anthropic backends
 
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import logging
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Ensure an Arabic-capable font is available at startup (cached once per run)
+# ---------------------------------------------------------------------------
+
+_FONTS_DIR = Path(__file__).parent / "fonts"
+_AMIRI_URL = (
+    "https://github.com/aliftype/amiri/releases/download/1.000/Amiri-1.000.zip"
+)
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_arabic_font() -> str | None:
+    """
+    Return a path to an Arabic-capable .ttf file, downloading one if needed.
+    Returns None if auto-detection from system paths will suffice.
+    """
+    from src.renderer import FontConfig, RenderError
+
+    # 1. Try the fonts that ship with the OS (e.g. fonts-freefont-ttf).
+    try:
+        fc = FontConfig().auto_detect()
+        return None  # auto_detect already works; pipeline will find it too
+    except RenderError:
+        pass
+
+    # 2. Try apt-get (works on Streamlit Cloud / Debian images where the
+    #    package wasn't pre-installed via packages.txt).
+    try:
+        subprocess.run(
+            ["apt-get", "install", "-y", "fonts-freefont-ttf"],
+            capture_output=True, timeout=60,
+        )
+        fc = FontConfig().auto_detect()
+        return None
+    except Exception:
+        pass
+
+    # 3. Last resort: download Amiri from GitHub releases.
+    _FONTS_DIR.mkdir(exist_ok=True)
+    amiri_path = _FONTS_DIR / "Amiri-Regular.ttf"
+    if not amiri_path.exists():
+        try:
+            zip_data = urllib.request.urlopen(_AMIRI_URL, timeout=30).read()
+            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                for name in zf.namelist():
+                    if name.endswith("Amiri-Regular.ttf"):
+                        amiri_path.write_bytes(zf.read(name))
+                        break
+        except Exception:
+            return None  # give up; pipeline will surface the error itself
+
+    return str(amiri_path) if amiri_path.exists() else None
+
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -141,6 +198,8 @@ if uploaded_file is not None:
         root_logger.addHandler(ui_handler)
         root_logger.setLevel(logging.INFO)
 
+        resolved_font = _ensure_arabic_font()
+
         try:
             # Write uploaded PDF to a temp file
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -173,6 +232,7 @@ if uploaded_file is not None:
                     translation_backend=backend,
                     api_key=api_key.strip() or None,
                     model=model_name.strip() or None,
+                    font_path=resolved_font,
                     cache_path=cache_path,
                     mirror_layout=mirror_layout,
                     preserve_positions=preserve_positions,
