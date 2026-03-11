@@ -165,8 +165,9 @@ class TranslationBackend(ABC):
 
 class MockTranslationBackend(TranslationBackend):
     """
-    Mock translator for testing. Wraps text in Arabic brackets
-    and adds some Arabic characters to simulate translation.
+    Mock translator for pipeline testing (no API key needed).
+    Returns pure Arabic placeholder text so the rendering path can be
+    verified without mixing Arabic/Latin glyphs (which confuses BiDi).
     """
 
     def name(self) -> str:
@@ -175,12 +176,54 @@ class MockTranslationBackend(TranslationBackend):
     def translate_texts(
         self, texts: list[str], source_lang: str = "en", target_lang: str = "ar"
     ) -> list[str]:
-        results = []
+        # Pure Arabic placeholder — no embedded Latin so BiDi stays clean.
+        # "ترجمة تجريبية" = "test translation"
+        return [f"[ترجمة تجريبية] {i + 1}" for i, _ in enumerate(texts)]
+
+
+# ===========================================================================
+# MyMemory Free Backend (no API key required)
+# ===========================================================================
+
+class MyMemoryTranslationBackend(TranslationBackend):
+    """
+    Free translation via the MyMemory public REST API.
+    No API key required for up to ~1 000 words/day.
+    https://mymemory.translated.net/doc/spec.php
+    """
+
+    def name(self) -> str:
+        return "mymemory"
+
+    def translate_texts(
+        self, texts: list[str], source_lang: str = "en", target_lang: str = "ar"
+    ) -> list[str]:
+        try:
+            import requests
+        except ImportError:
+            raise TranslationError("requests library required for MyMemory")
+
+        results: list[str] = []
+        langpair = f"{source_lang}|{target_lang}"
+
         for text in texts:
-            # Simple mock: reverse + add Arabic markers
-            # In tests, this helps verify the pipeline without API calls
-            arabic_text = f"«ترجمة: {text}»"
-            results.append(arabic_text)
+            for attempt in range(3):
+                try:
+                    resp = requests.get(
+                        "https://api.mymemory.translated.net/get",
+                        params={"q": text, "langpair": langpair},
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    translated = data["responseData"]["translatedText"]
+                    results.append(translated)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise TranslationError(f"MyMemory API failed: {e}")
+                    time.sleep(2 ** attempt)
+
         return results
 
 
@@ -447,6 +490,8 @@ class Translator:
     def _create_backend(self, config: TranslatorConfig) -> TranslationBackend:
         if config.backend == "mock":
             return MockTranslationBackend()
+        elif config.backend == "mymemory":
+            return MyMemoryTranslationBackend()
         elif config.backend == "google":
             return GoogleTranslationBackend(config.api_key)
         elif config.backend == "deepl":

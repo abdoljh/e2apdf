@@ -102,15 +102,16 @@ with st.sidebar:
 
     backend = st.selectbox(
         "Translation backend",
-        options=["mock", "google", "deepl", "llm-openai", "llm-anthropic"],
+        options=["mymemory", "mock", "google", "deepl", "llm-openai", "llm-anthropic"],
         format_func=lambda x: {
-            "mock": "Mock (testing — no API key needed)",
+            "mymemory": "MyMemory (free — no API key needed)",
+            "mock": "Mock (pipeline test only — not a real translation)",
             "google": "Google Cloud Translation",
             "deepl": "DeepL",
             "llm-openai": "OpenAI GPT",
             "llm-anthropic": "Anthropic Claude",
         }[x],
-        help="Choose the translation service.",
+        help="Choose the translation service. MyMemory is free and requires no API key.",
     )
 
     api_key = ""
@@ -123,7 +124,7 @@ with st.sidebar:
         "llm-anthropic": "ANTHROPIC_API_KEY",
     }
 
-    if backend != "mock":
+    if backend not in ("mock", "mymemory"):
         env_hint = _ENV_VAR_HINTS.get(backend, "API_KEY")
         # Secrets priority: st.secrets → env var → empty (user must type it)
         default_key = (
@@ -172,7 +173,8 @@ with st.sidebar:
 # Active-backend indicator
 # ---------------------------------------------------------------------------
 _BACKEND_LABELS = {
-    "mock": ("Mock (testing — no real translation)", "⚙️"),
+    "mymemory": ("MyMemory — free, no API key", "🆓"),
+    "mock": ("Mock — pipeline test only, not a real translation", "⚙️"),
     "google": ("Google Cloud Translation", "🔵"),
     "deepl": ("DeepL", "🟢"),
     "llm-openai": ("OpenAI GPT", "🟣"),
@@ -180,8 +182,9 @@ _BACKEND_LABELS = {
 }
 _label, _icon = _BACKEND_LABELS.get(backend, (backend, "🔧"))
 
-if backend == "mock":
-    st.info(f"{_icon} **Active backend:** {_label} — output is placeholder text, not real Arabic.", icon="ℹ️")
+if backend in ("mock", "mymemory"):
+    _note = " — produces placeholder text, not real Arabic." if backend == "mock" else " · real Arabic translation, ~1 000 words/day free."
+    st.info(f"{_icon} **Active backend:** {_label}{_note}", icon="ℹ️")
 else:
     _key_source = ""
     _env_hint = _ENV_VAR_HINTS.get(backend, "API_KEY")
