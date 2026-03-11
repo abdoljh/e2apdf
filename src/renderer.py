@@ -281,8 +281,16 @@ class PDFRenderer:
         Render text blocks at their original (mirrored) positions.
         Best fidelity to original layout.
         """
-        for tblock in page.translated_blocks:
+        # Sort top-to-bottom (highest y1 first in PDF bottom-up coords)
+        # so overlapping blocks render in the correct visual reading order.
+        blocks = sorted(
+            page.translated_blocks,
+            key=lambda b: -b.original.bbox.y1,
+        )
+        for tblock in blocks:
             text = tblock.translated_text.strip()
+            # Strip null bytes that can sneak in from figure label extraction
+            text = text.replace("\x00", "")
             if not text:
                 continue
 
@@ -298,14 +306,13 @@ class PDFRenderer:
 
             # Calculate position
             bbox = tblock.original.bbox
-            if self.config.mirror_layout:
-                # Mirror x-coordinates for RTL
-                x = page.width - bbox.x0 - self.config.margin_right
-            else:
-                x = page.width - self.config.margin_right
 
-            # PDF y-coordinate: bbox.y0 is from pypdfium2 (bottom-up)
-            y = bbox.y0
+            # Place the first-line baseline at bbox.y1 - font_size.
+            # For single-line blocks this equals bbox.y0 (exact match).
+            # For multi-line merged paragraphs bbox.y0 is the bottom of
+            # the last line, so the old code placed translated text
+            # ~block_height below where the original paragraph started.
+            y = bbox.y1 - font_size
 
             c.setFont(font_name, font_size)
             c.setFillColor(Color(*font.color))
@@ -316,8 +323,11 @@ class PDFRenderer:
 
             for i, line in enumerate(lines):
                 line_y = y - (i * font_size * self.config.line_spacing)
-                if line_y < self.config.margin_bottom:
-                    break  # Don't overflow below margin
+                # In positioned mode we respect original coordinates, so
+                # allow content right down to 0 (the page edge).  The
+                # margin_bottom guard is kept only to avoid going negative.
+                if line_y < 0:
+                    break
 
                 # Right-align for Arabic (draw from right side)
                 text_width = c.stringWidth(line, font_name, font_size)
