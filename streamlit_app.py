@@ -102,16 +102,16 @@ with st.sidebar:
 
     backend = st.selectbox(
         "Translation backend",
-        options=["mymemory", "mock", "google", "deepl", "llm-openai", "llm-anthropic"],
+        options=["free", "mock", "google", "deepl", "llm-openai", "llm-anthropic"],
         format_func=lambda x: {
-            "mymemory": "MyMemory (free — no API key needed)",
+            "free": "Free (Google Translate — no API key needed)",
             "mock": "Mock (pipeline test only — not a real translation)",
             "google": "Google Cloud Translation",
             "deepl": "DeepL",
             "llm-openai": "OpenAI GPT",
             "llm-anthropic": "Anthropic Claude",
         }[x],
-        help="Choose the translation service. MyMemory is free and requires no API key.",
+        help="Choose the translation service. 'Free' uses Google Translate with no API key.",
     )
 
     api_key = ""
@@ -124,7 +124,7 @@ with st.sidebar:
         "llm-anthropic": "ANTHROPIC_API_KEY",
     }
 
-    if backend not in ("mock", "mymemory"):
+    if backend not in ("mock", "free"):
         env_hint = _ENV_VAR_HINTS.get(backend, "API_KEY")
         # Secrets priority: st.secrets → env var → empty (user must type it)
         default_key = (
@@ -173,7 +173,7 @@ with st.sidebar:
 # Active-backend indicator
 # ---------------------------------------------------------------------------
 _BACKEND_LABELS = {
-    "mymemory": ("MyMemory — free, no API key", "🆓"),
+    "free": ("Free — Google Translate, no API key", "🆓"),
     "mock": ("Mock — pipeline test only, not a real translation", "⚙️"),
     "google": ("Google Cloud Translation", "🔵"),
     "deepl": ("DeepL", "🟢"),
@@ -182,8 +182,8 @@ _BACKEND_LABELS = {
 }
 _label, _icon = _BACKEND_LABELS.get(backend, (backend, "🔧"))
 
-if backend in ("mock", "mymemory"):
-    _note = " — produces placeholder text, not real Arabic." if backend == "mock" else " · real Arabic translation, ~1 000 words/day free."
+if backend in ("mock", "free"):
+    _note = " — produces placeholder text, not real Arabic." if backend == "mock" else " · real Arabic translation via Google Translate, no API key required."
     st.info(f"{_icon} **Active backend:** {_label}{_note}", icon="ℹ️")
 else:
     _key_source = ""
@@ -211,7 +211,7 @@ if uploaded_file is not None:
     st.success(f"File loaded: **{uploaded_file.name}** ({uploaded_file.size:,} bytes)")
 
     if st.button("Translate to Arabic", type="primary", use_container_width=True):
-        if backend != "mock" and not api_key.strip():
+        if backend not in ("mock", "free") and not api_key.strip():
             st.error(
                 f"Please enter your API key for the **{backend}** backend "
                 "(or set the corresponding environment variable)."
@@ -369,6 +369,6 @@ else:
 # ---------------------------------------------------------------------------
 st.divider()
 st.caption(
-    "Backends: **mock** (free, testing) · **Google** · **DeepL** · **OpenAI** · **Anthropic**  |  "
+    "Backends: **free** (Google Translate, no key) · **Google Cloud** · **DeepL** · **OpenAI** · **Anthropic**  |  "
     "Source: [abdoljh/e2apdf](https://github.com/abdoljh/e2apdf)"
 )

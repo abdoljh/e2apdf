@@ -182,18 +182,18 @@ class MockTranslationBackend(TranslationBackend):
 
 
 # ===========================================================================
-# MyMemory Free Backend (no API key required)
+# Free Backend — unofficial Google Translate (gtx client, no API key)
 # ===========================================================================
 
-class MyMemoryTranslationBackend(TranslationBackend):
+class FreeTranslationBackend(TranslationBackend):
     """
-    Free translation via the MyMemory public REST API.
-    No API key required for up to ~1 000 words/day.
-    https://mymemory.translated.net/doc/spec.php
+    Free translation using the same unofficial Google Translate endpoint
+    that browser extensions and tools like googletrans use (client=gtx).
+    No API key required. Suitable for moderate document volumes.
     """
 
     def name(self) -> str:
-        return "mymemory"
+        return "free"
 
     def translate_texts(
         self, texts: list[str], source_lang: str = "en", target_lang: str = "ar"
@@ -201,27 +201,38 @@ class MyMemoryTranslationBackend(TranslationBackend):
         try:
             import requests
         except ImportError:
-            raise TranslationError("requests library required for MyMemory")
+            raise TranslationError("requests library required")
 
         results: list[str] = []
-        langpair = f"{source_lang}|{target_lang}"
+        url = "https://translate.googleapis.com/translate_a/single"
 
         for text in texts:
             for attempt in range(3):
                 try:
                     resp = requests.get(
-                        "https://api.mymemory.translated.net/get",
-                        params={"q": text, "langpair": langpair},
+                        url,
+                        params={
+                            "client": "gtx",
+                            "sl": source_lang,
+                            "tl": target_lang,
+                            "dt": "t",
+                            "q": text,
+                        },
                         timeout=15,
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    translated = data["responseData"]["translatedText"]
+                    # Response: [[["translated", "source", ...], ...], ...]
+                    translated = "".join(
+                        part[0] for part in data[0] if part[0]
+                    )
                     results.append(translated)
                     break
                 except Exception as e:
                     if attempt == 2:
-                        raise TranslationError(f"MyMemory API failed: {e}")
+                        raise TranslationError(
+                            f"Free translation failed: {e}"
+                        )
                     time.sleep(2 ** attempt)
 
         return results
@@ -261,20 +272,24 @@ class GoogleTranslationBackend(TranslationBackend):
         url = "https://translation.googleapis.com/language/translate/v2"
         results = []
 
-        # Google API supports batch in a single call
+        # Google v2 REST API: key must be a URL query param, not in the body
         for i in range(0, len(texts), 128):  # Max 128 segments per call
             batch = texts[i : i + 128]
-            payload = {
+            body = {
                 "q": batch,
                 "source": source_lang,
                 "target": target_lang,
                 "format": "text",
-                "key": self._api_key,
             }
 
             for attempt in range(3):
                 try:
-                    resp = requests.post(url, json=payload, timeout=30)
+                    resp = requests.post(
+                        url,
+                        params={"key": self._api_key},
+                        json=body,
+                        timeout=30,
+                    )
                     resp.raise_for_status()
                     data = resp.json()
                     translations = data["data"]["translations"]
@@ -282,7 +297,9 @@ class GoogleTranslationBackend(TranslationBackend):
                     break
                 except Exception as e:
                     if attempt == 2:
-                        raise TranslationError(f"Google API failed after 3 retries: {e}")
+                        raise TranslationError(
+                            f"Google API failed after 3 retries: {e}"
+                        )
                     time.sleep(2 ** attempt)
 
         return results
@@ -490,8 +507,8 @@ class Translator:
     def _create_backend(self, config: TranslatorConfig) -> TranslationBackend:
         if config.backend == "mock":
             return MockTranslationBackend()
-        elif config.backend == "mymemory":
-            return MyMemoryTranslationBackend()
+        elif config.backend in ("free", "mymemory"):   # "mymemory" kept for back-compat
+            return FreeTranslationBackend()
         elif config.backend == "google":
             return GoogleTranslationBackend(config.api_key)
         elif config.backend == "deepl":
