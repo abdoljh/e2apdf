@@ -133,10 +133,10 @@ class RendererConfig:
     mirror_layout: bool = True  # Mirror x-positions for RTL
     preserve_positions: bool = False  # Use flowing A4 layout by default
     output_pagesize: tuple = None  # None = use A4; set to (w,h) to override
-    body_font_size: float = 13.0  # Fixed font size for flowing layout
+    body_font_size: float = 14.0  # Fixed font size for flowing layout
     add_page_numbers: bool = True
     page_number_text: str = "صفحة"  # "Page" in Arabic
-    fallback_font_size: float = 13.0
+    fallback_font_size: float = 14.0
 
 
 class PDFRenderer:
@@ -352,15 +352,24 @@ class PDFRenderer:
     def _render_flowing_text(
         self, c: canvas.Canvas, page: TranslatedPage,
         page_width: float, page_height: float,
-    ):
+    ) -> int:
         """
         Render text in a flowing A4 layout (top-to-bottom, right-aligned RTL).
-        Uses a fixed body font size; bold/large blocks are rendered slightly
-        larger to preserve heading hierarchy.
+        Creates new output pages automatically when content overflows.
+        Returns the number of overflow pages created (not counting the first).
         """
         y = page_height - self.config.margin_top
         max_width = page_width - self.config.margin_left - self.config.margin_right
         base_size = self.config.body_font_size
+        overflow_pages = 0
+
+        def new_page():
+            nonlocal y, overflow_pages
+            self._render_page_number(c, page_width, page.page_number)
+            c.showPage()
+            c.setPageSize((page_width, page_height))
+            y = page_height - self.config.margin_top
+            overflow_pages += 1
 
         for tblock in page.translated_blocks:
             text = tblock.translated_text.strip()
@@ -370,7 +379,7 @@ class PDFRenderer:
             font = tblock.font
             font_name = self._get_font_name(font.is_bold, font.is_italic)
 
-            # Scale: headings (bold or originally large) get up to 1.5× body size
+            # Headings (bold or originally large) get up to 1.4× body size
             if font.is_bold or font.size > base_size * 1.3:
                 font_size = min(base_size * 1.4, 20.0)
             else:
@@ -382,13 +391,13 @@ class PDFRenderer:
                 display_text = text
 
             c.setFont(font_name, font_size)
-            c.setFillColor(black)  # Always black for clean output
+            c.setFillColor(black)
 
             lines = self._wrap_text(c, display_text, font_name, font_size, max_width)
 
             for line in lines:
                 if y < self.config.margin_bottom:
-                    break
+                    new_page()
 
                 text_width = c.stringWidth(line, font_name, font_size)
                 x = page_width - self.config.margin_right - text_width
@@ -397,11 +406,10 @@ class PDFRenderer:
                 c.drawString(x, y, line)
                 y -= font_size * self.config.line_spacing
 
-            # Extra gap after headings, normal gap after body
-            if font.is_bold or font.size > base_size * 1.3:
-                y -= font_size * 0.6
-            else:
-                y -= font_size * 0.3
+            # Extra gap after headings, smaller gap after body
+            y -= font_size * (0.6 if (font.is_bold or font.size > base_size * 1.3) else 0.3)
+
+        return overflow_pages
 
     def _render_image(
         self, c: canvas.Canvas, img: ImageBlock, page_width: float

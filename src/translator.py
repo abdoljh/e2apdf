@@ -397,35 +397,34 @@ class LLMTranslationBackend(TranslationBackend):
     def translate_texts(
         self, texts: list[str], source_lang: str = "en", target_lang: str = "ar"
     ) -> list[str]:
+        """Translate one text at a time to guarantee order is preserved."""
         try:
             import requests
         except ImportError:
             raise TranslationError("requests library required")
 
-        # Batch texts with delimiter
-        combined = _BATCH_DELIM.join(texts)
-        prompt = (
-            f"Translate the following English text segments to Arabic. "
-            f"Each segment is separated by '{_BATCH_DELIM.strip()}'. "
-            f"Return ONLY the Arabic translations, separated by the same delimiter. "
-            f"Preserve any numbers, proper nouns, and formatting.\n\n{combined}"
-        )
+        results: list[str] = []
+        for text in texts:
+            if self._provider == "openai":
+                results.append(self._call_openai(text))
+            else:
+                results.append(self._call_anthropic(text))
+        return results
 
-        if self._provider == "openai":
-            return self._call_openai(prompt, len(texts))
-        else:
-            return self._call_anthropic(prompt, len(texts))
-
-    def _call_openai(self, prompt: str, expected_count: int) -> list[str]:
+    def _call_openai(self, text: str) -> str:
         import requests
 
+        prompt = (
+            "Translate the following English text to Arabic. "
+            "Return ONLY the Arabic translation, no explanations.\n\n" + text
+        )
         resp = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
             json={
                 "model": self._model,
                 "messages": [
-                    {"role": "system", "content": "You are a professional English-Arabic translator."},
+                    {"role": "system", "content": "You are a professional English-Arabic translator. Output only the Arabic translation."},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.1,
@@ -433,13 +432,15 @@ class LLMTranslationBackend(TranslationBackend):
             timeout=60,
         )
         resp.raise_for_status()
-        result_text = resp.json()["choices"][0]["message"]["content"]
-        parts = result_text.split(_BATCH_DELIM.strip())
-        return self._align_parts(parts, expected_count)
+        return resp.json()["choices"][0]["message"]["content"].strip()
 
-    def _call_anthropic(self, prompt: str, expected_count: int) -> list[str]:
+    def _call_anthropic(self, text: str) -> str:
         import requests
 
+        prompt = (
+            "Translate the following English text to Arabic. "
+            "Return ONLY the Arabic translation, no explanations.\n\n" + text
+        )
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -449,27 +450,13 @@ class LLMTranslationBackend(TranslationBackend):
             },
             json={
                 "model": self._model,
-                "max_tokens": 4096,
+                "max_tokens": 1024,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=60,
         )
         resp.raise_for_status()
-        result_text = resp.json()["content"][0]["text"]
-        parts = result_text.split(_BATCH_DELIM.strip())
-        return self._align_parts(parts, expected_count)
-
-    def _align_parts(self, parts: list[str], expected: int) -> list[str]:
-        """Ensure we have the right number of translations."""
-        parts = [p.strip() for p in parts]
-        if len(parts) == expected:
-            return parts
-        if len(parts) > expected:
-            return parts[:expected]
-        # Pad with last translation repeated
-        while len(parts) < expected:
-            parts.append(parts[-1] if parts else "")
-        return parts
+        return resp.json()["content"][0]["text"].strip()
 
 
 # ===========================================================================
@@ -558,7 +545,7 @@ class Translator:
         return result
 
     def _translate_page(self, page: PageContent) -> TranslatedPage:
-        """Translate all text blocks in a page."""
+        """Translate all text blocks in a page, preserving document order."""
         translated_page = TranslatedPage(
             page_number=page.page_number,
             width=page.width,
@@ -566,38 +553,40 @@ class Translator:
             image_blocks=page.image_blocks,
         )
 
-        # Separate blocks into translatable and skip
+        # Separate blocks into translatable and skip, tracking original index
         to_translate: list[tuple[int, TextBlock]] = []
+        result_map: dict[int, TranslatedBlock] = {}
+
         for idx, block in enumerate(page.text_blocks):
             self._stats["total_blocks"] += 1
             text = block.full_text.strip()
 
             if should_skip_translation(text):
                 self._stats["skipped"] += 1
-                # Keep as untranslated
-                translated_page.translated_blocks.append(
-                    TranslatedBlock(
-                        original=block,
-                        translated_text=text,
-                        font=block.primary_font,
-                    )
+                result_map[idx] = TranslatedBlock(
+                    original=block,
+                    translated_text=text,
+                    font=block.primary_font,
                 )
             else:
                 to_translate.append((idx, block))
 
-        # Batch translate
+        # Batch translate the translatable blocks
         if to_translate:
             texts = [block.full_text.strip() for _, block in to_translate]
             translations = self._batch_translate(texts)
 
-            for (_, block), translated_text in zip(to_translate, translations):
-                translated_page.translated_blocks.append(
-                    TranslatedBlock(
-                        original=block,
-                        translated_text=translated_text,
-                        font=block.primary_font,
-                    )
+            for (idx, block), translated_text in zip(to_translate, translations):
+                result_map[idx] = TranslatedBlock(
+                    original=block,
+                    translated_text=translated_text,
+                    font=block.primary_font,
                 )
+
+        # Rebuild in original document order
+        for idx in range(len(page.text_blocks)):
+            if idx in result_map:
+                translated_page.translated_blocks.append(result_map[idx])
 
         return translated_page
 

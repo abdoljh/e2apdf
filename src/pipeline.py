@@ -46,7 +46,7 @@ class PipelineConfig:
     font_path: Optional[str] = None
     mirror_layout: bool = True
     preserve_positions: bool = False  # Flowing A4 layout by default
-    body_font_size: float = 13.0
+    body_font_size: float = 14.0
     add_page_numbers: bool = True
     line_spacing: float = 1.6
     margin: float = 50.0
