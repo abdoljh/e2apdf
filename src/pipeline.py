@@ -45,9 +45,10 @@ class PipelineConfig:
     # Rendering settings
     font_path: Optional[str] = None
     mirror_layout: bool = True
-    preserve_positions: bool = True
+    preserve_positions: bool = False  # Flowing A4 layout by default
+    body_font_size: float = 13.0
     add_page_numbers: bool = True
-    line_spacing: float = 1.4
+    line_spacing: float = 1.6
     margin: float = 50.0
 
     # Pipeline behavior
@@ -239,6 +240,7 @@ class E2APipeline:
                 font_config=font_config,
                 mirror_layout=self.config.mirror_layout,
                 preserve_positions=self.config.preserve_positions,
+                body_font_size=self.config.body_font_size,
                 add_page_numbers=self.config.add_page_numbers,
                 line_spacing=self.config.line_spacing,
                 margin_top=self.config.margin,
