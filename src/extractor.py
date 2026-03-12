@@ -32,9 +32,16 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# Vertical gap threshold: if two text lines are closer than this
-# multiple of the font size, they're considered the same paragraph.
-_PARA_GAP_FACTOR = 1.5
+# Vertical gap threshold for paragraph merging.
+# Applied as: gap < cur_block_height * _PARA_GAP_FACTOR → same paragraph.
+#
+# 0.6 is chosen to satisfy two conflicting constraints observed empirically:
+#   • Research-style PDFs: intra-paragraph gap ≈ 0.30× line-height
+#     → 0.30 < 0.6  → consecutive lines MERGE
+#   • Dense-layout PDFs (e.g. landscape textbook): inter-paragraph gap ≈ 0.84×
+#     → 0.84 > 0.6  → paragraph breaks DO NOT merge
+#   • Heading-to-body gap ≈ 1.1× line-height → heading stays separate
+_PARA_GAP_FACTOR = 0.6
 
 # Minimum text length to consider a block translatable
 _MIN_TEXT_LENGTH = 1
@@ -238,6 +245,16 @@ class PDFExtractor:
                         current_bbox = None
                     continue
 
+                # Zero-height whitespace chars (common in digitally-typeset PDFs)
+                # mark word boundaries but have no visible extent.  If orphaned
+                # into their own span they land on a "ghost line" at y≈0,
+                # breaking word-joining logic and causing "Ifyou" concatenation.
+                # Absorb them into the active span so word separators survive.
+                if char in (' ', '\t') and abs(y1 - y0) < 0.5:
+                    if current_text and current_bbox is not None:
+                        current_text.append(char)
+                    continue
+
                 font_size = abs(y1 - y0) if abs(y1 - y0) > 0.5 else 12.0
 
                 # Check if this char continues the current span
@@ -430,32 +447,60 @@ class PDFExtractor:
 
     def _merge_paragraph_blocks(self, blocks: list[TextBlock]) -> list[TextBlock]:
         """
-        Merge vertically adjacent blocks with similar font into paragraphs.
+        Merge vertically adjacent blocks with similar line height into paragraphs.
         This gives the translator more context for better translations.
+
+        Uses actual block height (bbox.y1 - bbox.y0) rather than the estimated
+        primary_font.size because per-glyph bbox heights (used to estimate font
+        size) are unreliable: lowercase characters are ~half the nominal font
+        size, causing size_match to fail on adjacent lines of the same paragraph.
         """
         if len(blocks) <= 1:
             return blocks
 
-        merged: list[TextBlock] = [blocks[0]]
+        merged: list[TextBlock] = []
 
-        for block in blocks[1:]:
+        for block in blocks:
+            cur_h = block.bbox.y1 - block.bbox.y0
+
+            # Absorb tiny overlay blocks (commas, spaces, periods placed at
+            # the character baseline by some PDF generators).  These break
+            # the merge chain without contributing meaningful text.
+            if cur_h < 6.0 and merged:
+                prev = merged[-1]
+                prev.spans.extend(block.spans)
+                prev.bbox = BBox(
+                    min(prev.bbox.x0, block.bbox.x0),
+                    min(prev.bbox.y0, block.bbox.y0),
+                    max(prev.bbox.x1, block.bbox.x1),
+                    max(prev.bbox.y1, block.bbox.y1),
+                )
+                continue
+
+            if not merged:
+                merged.append(block)
+                continue
+
             prev = merged[-1]
-            prev_font = prev.primary_font
-            cur_font = block.primary_font
 
-            # Merge if: similar font size, close vertical gap, similar x range
+            # Use current block's height as the reference throughout.
+            # prev_h grows with every merge (e.g. 4-line paragraph = 4×line_h),
+            # so using max(prev_h, cur_h) would inflate thresholds over time.
+            # cur_h is always a single (not-yet-merged) line, giving a stable
+            # reference equal to the nominal line height of the document.
+            ref_h = max(cur_h, 1.0)
+
             vert_gap = abs(block.bbox.y1 - prev.bbox.y0)
-            size_match = abs(prev_font.size - cur_font.size) < 2.0
-            x_overlap = (
-                abs(block.bbox.x0 - prev.bbox.x0) < prev_font.size * 3
-            )
 
-            if (
-                size_match
-                and x_overlap
-                and vert_gap < prev_font.size * _PARA_GAP_FACTOR
-            ):
-                # Merge into previous block
+            # Left edges within 3× line-height (handles minor indentation)
+            x_overlap = abs(block.bbox.x0 - prev.bbox.x0) < ref_h * 3
+
+            # Gap smaller than _PARA_GAP_FACTOR × line-height → same paragraph.
+            # Larger gaps indicate a heading boundary, paragraph break, or
+            # section end and the blocks should remain separate.
+            gap_ok = vert_gap < ref_h * _PARA_GAP_FACTOR
+
+            if x_overlap and gap_ok:
                 prev.spans.extend(block.spans)
                 prev.bbox = BBox(
                     min(prev.bbox.x0, block.bbox.x0),
