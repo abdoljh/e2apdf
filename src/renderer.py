@@ -129,12 +129,14 @@ class RendererConfig:
     margin_bottom: float = 50.0
     margin_left: float = 50.0
     margin_right: float = 50.0
-    line_spacing: float = 1.4  # Line height multiplier
+    line_spacing: float = 1.6  # Line height multiplier
     mirror_layout: bool = True  # Mirror x-positions for RTL
-    preserve_positions: bool = True  # Try to match original positions
+    preserve_positions: bool = False  # Use flowing A4 layout by default
+    output_pagesize: tuple = None  # None = use A4; set to (w,h) to override
+    body_font_size: float = 13.0  # Fixed font size for flowing layout
     add_page_numbers: bool = True
     page_number_text: str = "صفحة"  # "Page" in Arabic
-    fallback_font_size: float = 12.0
+    fallback_font_size: float = 13.0
 
 
 class PDFRenderer:
@@ -236,12 +238,16 @@ class PDFRenderer:
 
     def _render_document(self, doc: TranslatedDocument, output_path: Path):
         """Render all pages to a PDF file."""
-        # Use first page dimensions or default to A4
-        if doc.pages:
-            first = doc.pages[0]
-            pagesize = (first.width, first.height)
+        # Flowing mode always outputs A4 (or the configured size).
+        # Positioned mode preserves the original page dimensions.
+        if self.config.preserve_positions:
+            if doc.pages:
+                first = doc.pages[0]
+                pagesize = (first.width, first.height)
+            else:
+                pagesize = A4
         else:
-            pagesize = A4
+            pagesize = self.config.output_pagesize or A4
 
         c = canvas.Canvas(str(output_path), pagesize=pagesize)
         c.setTitle("E2A Translated Document")
@@ -260,21 +266,26 @@ class PDFRenderer:
 
     def _render_page(self, c: canvas.Canvas, page: TranslatedPage):
         """Render a single translated page."""
-        c.setPageSize((page.width, page.height))
+        if self.config.preserve_positions:
+            out_w, out_h = page.width, page.height
+        else:
+            out_w, out_h = self.config.output_pagesize or A4
+        c.setPageSize((out_w, out_h))
 
-        # --- Render images first (background layer) ---
-        for img_block in page.image_blocks:
-            self._render_image(c, img_block, page.width)
+        # --- Render images first (background layer, positioned mode only) ---
+        if self.config.preserve_positions:
+            for img_block in page.image_blocks:
+                self._render_image(c, img_block, out_w)
 
         # --- Render translated text ---
         if self.config.preserve_positions:
             self._render_positioned_text(c, page)
         else:
-            self._render_flowing_text(c, page)
+            self._render_flowing_text(c, page, out_w, out_h)
 
         # --- Page number ---
         if self.config.add_page_numbers:
-            self._render_page_number(c, page)
+            self._render_page_number(c, out_w, page.page_number)
 
     def _render_positioned_text(self, c: canvas.Canvas, page: TranslatedPage):
         """
@@ -338,13 +349,18 @@ class PDFRenderer:
 
                 c.drawString(line_x, line_y, line)
 
-    def _render_flowing_text(self, c: canvas.Canvas, page: TranslatedPage):
+    def _render_flowing_text(
+        self, c: canvas.Canvas, page: TranslatedPage,
+        page_width: float, page_height: float,
+    ):
         """
-        Render text in a simple flowing layout (top-to-bottom, right-aligned).
-        Used when position preservation isn't needed.
+        Render text in a flowing A4 layout (top-to-bottom, right-aligned RTL).
+        Uses a fixed body font size; bold/large blocks are rendered slightly
+        larger to preserve heading hierarchy.
         """
-        y = page.height - self.config.margin_top
-        max_width = page.width - self.config.margin_left - self.config.margin_right
+        y = page_height - self.config.margin_top
+        max_width = page_width - self.config.margin_left - self.config.margin_right
+        base_size = self.config.body_font_size
 
         for tblock in page.translated_blocks:
             text = tblock.translated_text.strip()
@@ -353,7 +369,12 @@ class PDFRenderer:
 
             font = tblock.font
             font_name = self._get_font_name(font.is_bold, font.is_italic)
-            font_size = max(font.size, 6.0)
+
+            # Scale: headings (bold or originally large) get up to 1.5× body size
+            if font.is_bold or font.size > base_size * 1.3:
+                font_size = min(base_size * 1.4, 20.0)
+            else:
+                font_size = base_size
 
             if has_arabic(text):
                 display_text = prepare_arabic(text)
@@ -361,7 +382,7 @@ class PDFRenderer:
                 display_text = text
 
             c.setFont(font_name, font_size)
-            c.setFillColor(Color(*font.color))
+            c.setFillColor(black)  # Always black for clean output
 
             lines = self._wrap_text(c, display_text, font_name, font_size, max_width)
 
@@ -370,14 +391,17 @@ class PDFRenderer:
                     break
 
                 text_width = c.stringWidth(line, font_name, font_size)
-                x = page.width - self.config.margin_right - text_width
+                x = page_width - self.config.margin_right - text_width
                 x = max(self.config.margin_left, x)
 
                 c.drawString(x, y, line)
                 y -= font_size * self.config.line_spacing
 
-            # Paragraph spacing
-            y -= font_size * 0.5
+            # Extra gap after headings, normal gap after body
+            if font.is_bold or font.size > base_size * 1.3:
+                y -= font_size * 0.6
+            else:
+                y -= font_size * 0.3
 
     def _render_image(
         self, c: canvas.Canvas, img: ImageBlock, page_width: float
@@ -402,15 +426,17 @@ class PDFRenderer:
         except Exception as e:
             logger.warning(f"Failed to render image: {e}")
 
-    def _render_page_number(self, c: canvas.Canvas, page: TranslatedPage):
+    def _render_page_number(
+        self, c: canvas.Canvas, page_width: float, page_number: int
+    ):
         """Add Arabic page number at the bottom center."""
         font_name = self._font_names["regular"]
         c.setFont(font_name, 10)
         c.setFillColor(black)
 
-        page_text = prepare_arabic(f"{self.config.page_number_text} {page.page_number}")
+        page_text = prepare_arabic(f"{self.config.page_number_text} {page_number}")
         text_width = c.stringWidth(page_text, font_name, 10)
-        x = (page.width - text_width) / 2
+        x = (page_width - text_width) / 2
         y = self.config.margin_bottom / 2
 
         c.drawString(x, y, page_text)

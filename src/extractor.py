@@ -231,8 +231,13 @@ class PDFExtractor:
                 # Get character rectangle
                 try:
                     rect = textpage.get_charbox(i)
-                    # rect is (left, bottom, right, top) in PDF coords
-                    x0, y0, x1, y1 = rect
+                    # pdfium returns (left, bottom, right, top) in page
+                    # user space where y=0 is at the TOP and increases
+                    # downward (screen coords).  Flip to standard PDF /
+                    # ReportLab space where y=0 is at the BOTTOM.
+                    x0, y0_raw, x1, y1_raw = rect
+                    y0 = page_height - y1_raw
+                    y1 = page_height - y0_raw
                 except Exception:
                     # If we can't get the rect, flush current and skip
                     if current_text:
